@@ -126,13 +126,13 @@ err_free_tfm:
 }
 
 static int gip_auth_ecdh_get_pubkey(struct crypto_kpp *tfm,
-				    u8 *pubkey, int len)
+				    u8 *out, int len)
 {
 	struct kpp_request *req;
 	struct scatterlist dest;
 	struct ecdh key = {};
 	DECLARE_CRYPTO_WAIT(wait);
-	void *privkey;
+	void *privkey, *pubkey;
 	unsigned int privkey_len;
 	int err;
 
@@ -141,19 +141,23 @@ static int gip_auth_ecdh_get_pubkey(struct crypto_kpp *tfm,
 	if (!privkey)
 		return -ENOMEM;
 
+	pubkey = kzalloc(len, GFP_KERNEL);
+	if (!pubkey)
+		goto err_free_privkey;
+
 	/* generate private key */
 	err = crypto_ecdh_encode_key(privkey, privkey_len, &key);
 	if (err)
-		goto err_free_privkey;
+		goto err_free_pubkey;
 
 	err = crypto_kpp_set_secret(tfm, privkey, privkey_len);
 	if (err)
-		goto err_free_privkey;
+		goto err_free_pubkey;
 
 	req = kpp_request_alloc(tfm, GFP_KERNEL);
 	if (!req) {
 		err = -ENOMEM;
-		goto err_free_privkey;
+		goto err_free_pubkey;
 	}
 
 	sg_init_one(&dest, pubkey, len);
@@ -163,11 +167,15 @@ static int gip_auth_ecdh_get_pubkey(struct crypto_kpp *tfm,
 	kpp_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
 				 crypto_req_done, &wait);
 	err = crypto_wait_req(crypto_kpp_generate_public_key(req), &wait);
+	if (!err)
+		memcpy(out, pubkey, len);
 
 	kpp_request_free(req);
 
+err_free_pubkey:
+	kfree(pubkey);
 err_free_privkey:
-	kfree_sensitive(privkey);
+	kfree(privkey);
 
 	return err;
 }
@@ -204,12 +212,18 @@ int gip_auth_compute_ecdh(u8 *pubkey_in, u8 *pubkey_out,
 {
 	struct crypto_kpp *tfm_ecdh;
 	struct crypto_shash *tfm_sha;
-	u8 secret[GIP_AUTH_ECDH_SECRET_LEN];
+	u8 *secret;
 	int err;
 
+	secret = kzalloc(GIP_AUTH_ECDH_SECRET_LEN, GFP_KERNEL);
+	if (!secret)
+		return -ENOMEM;
+
 	tfm_ecdh = crypto_alloc_kpp("ecdh-nist-p256", 0, 0);
-	if (IS_ERR(tfm_ecdh))
-		return PTR_ERR(tfm_ecdh);
+	if (IS_ERR(tfm_ecdh)) {
+		err = PTR_ERR(tfm_ecdh);
+		goto err_free_secret;
+	}
 
 	tfm_sha = crypto_alloc_shash("sha256", 0, 0);
 	if (IS_ERR(tfm_sha)) {
@@ -222,17 +236,19 @@ int gip_auth_compute_ecdh(u8 *pubkey_in, u8 *pubkey_out,
 		goto err_free_sha;
 
 	err = gip_auth_ecdh_get_secret(tfm_ecdh, pubkey_in, pubkey_len,
-				       secret, sizeof(secret));
+				       secret, GIP_AUTH_ECDH_SECRET_LEN);
 	if (err)
 		goto err_free_sha;
 
-	crypto_shash_tfm_digest(tfm_sha, secret, sizeof(secret), secret_hash);
+	crypto_shash_tfm_digest(tfm_sha, secret, GIP_AUTH_ECDH_SECRET_LEN,
+				secret_hash);
 
 err_free_sha:
 	crypto_free_shash(tfm_sha);
-
 err_free_ecdh:
 	crypto_free_kpp(tfm_ecdh);
+err_free_secret:
+	kfree(secret);
 
 	return err;
 }

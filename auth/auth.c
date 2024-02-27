@@ -201,9 +201,6 @@ static int gip_auth2_send_hello(struct gip_auth *auth)
 {
 	struct gip_auth2_pkt_host_hello pkt = {};
 
-	/* reset transcript after protocol upgrade */
-	crypto_shash_init(auth->shash_transcript);
-
 	get_random_bytes(auth->random_host, sizeof(auth->random_host));
 	memcpy(pkt.random, auth->random_host, sizeof(pkt.random));
 
@@ -262,8 +259,8 @@ static void gip_auth2_exchange_ecdh(struct work_struct *work)
 	struct gip_auth *auth = container_of(work, typeof(*auth),
 					     work_exchange_ecdh);
 	struct gip_auth2_pkt_host_pubkey pkt = {};
-	u8 secret[GIP_AUTH2_SECRET_LEN];
 	u8 random[GIP_AUTH_RANDOM_LEN * 2];
+	u8 secret[GIP_AUTH2_SECRET_LEN];
 	int err;
 
 	memcpy(random, auth->random_host, sizeof(auth->random_host));
@@ -296,7 +293,7 @@ static void gip_auth2_exchange_ecdh(struct work_struct *work)
 			__func__, err);
 }
 
-int gip_auth_send_pkt_hello(struct gip_auth *auth)
+static int gip_auth_send_pkt_hello(struct gip_auth *auth)
 {
 	struct gip_auth_pkt_host_hello pkt = {};
 
@@ -460,7 +457,8 @@ static void gip_auth_exchange_rsa(struct work_struct *work)
 	/* get random premaster secret */
 	get_random_bytes(pms, sizeof(pms));
 
-	err = gip_auth_encrypt_rsa(auth->pubkey_client, GIP_AUTH_PUBKEY_LEN,
+	err = gip_auth_encrypt_rsa(auth->pubkey_client,
+				   sizeof(auth->pubkey_client),
 				   pms, sizeof(pms), pkt.encrypted_pms,
 				   sizeof(pkt.encrypted_pms));
 	if (err) {
@@ -530,9 +528,9 @@ static void gip_auth_complete_handshake(struct work_struct *work)
 			"%s: set encryption key failed: %d\n", __func__, err);
 }
 
-int gip_auth_dispatch_pkt(struct gip_auth *auth,
-			  enum gip_auth_command_handshake cmd,
-			  void *data, u32 len)
+static int gip_auth_dispatch_pkt(struct gip_auth *auth,
+				 enum gip_auth_command_handshake cmd,
+				 void *data, u32 len)
 {
 	switch (cmd) {
 	case GIP_AUTH2_CMD_CLIENT_HELLO:
@@ -564,7 +562,9 @@ static int gip_auth_process_pkt_data(struct gip_auth *auth, void *data, u32 len)
 
 	/* client uses auth v2 */
 	if (hdr->handshake.command != hdr->data.command) {
+		/* reset transcript hash and restart handshake */
 		dev_dbg(&auth->client->dev, "%s: protocol upgrade\n", __func__);
+		crypto_shash_init(auth->shash_transcript);
 		return gip_auth2_send_hello(auth);
 	}
 
@@ -591,8 +591,14 @@ int gip_auth_process_pkt(struct gip_auth *auth, void *data, u32 len)
 	if (hdr->error)
 		return -EPROTO;
 
-	if (hdr->options & GIP_AUTH_OPT_ACKNOWLEDGE)
-		return gip_auth_handle_pkt_acknowledge(auth);
+	if (hdr->options & GIP_AUTH_OPT_ACKNOWLEDGE) {
+		if (hdr->command == 0x01)
+			return gip_auth_handle_pkt_acknowledge(auth);
+
+		dev_err(&auth->client->dev, "%s: handshake failed: 0x%02x\n",
+			__func__, hdr->command);
+		return -EPROTO;
+	}
 
 	return gip_auth_process_pkt_data(auth, data, len);
 }

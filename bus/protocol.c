@@ -382,6 +382,7 @@ static int gip_acknowledge_pkt(struct gip_client *client,
 	struct gip_chunk_buffer *chunk_buf = client->chunk_buf;
 	struct gip_header hdr = {};
 	struct gip_pkt_acknowledge pkt = {};
+	u32 len = ack->chunk_offset + ack->packet_length;
 
 	hdr.command = GIP_CMD_ACKNOWLEDGE;
 	hdr.options = client->id | GIP_OPT_INTERNAL;
@@ -390,10 +391,10 @@ static int gip_acknowledge_pkt(struct gip_client *client,
 
 	pkt.command = ack->command;
 	pkt.options = client->id | GIP_OPT_INTERNAL;
-	pkt.length = cpu_to_le16(ack->chunk_offset + ack->packet_length);
+	pkt.length = cpu_to_le16(len);
 
 	if ((ack->options & GIP_OPT_CHUNK) && chunk_buf)
-		pkt.remaining = cpu_to_le16(chunk_buf->length) - pkt.length;
+		pkt.remaining = cpu_to_le16(chunk_buf->length - len);
 
 	return gip_send_pkt(client, &hdr, &pkt);
 }
@@ -729,7 +730,6 @@ static int gip_make_audio_config(struct gip_client *client,
 	/* pseudo header for length calculation */
 	hdr.packet_length = cfg->fragment_size;
 	cfg->packet_size = gip_get_header_length(&hdr) + cfg->fragment_size;
-	cfg->valid = true;
 
 	gip_dbg(client, "%s: rate=%d/%d, buffer=%d\n", __func__,
 		cfg->sample_rate, cfg->channels, cfg->buffer_size);
@@ -912,7 +912,7 @@ static int gip_parse_classes(struct gip_client *client,
 		if (len < off + sizeof(str_len))
 			return -EINVAL;
 
-		str_len = le16_to_cpup((u16 *)(data + off));
+		str_len = le16_to_cpup((__le16 *)(data + off));
 		off += sizeof(str_len);
 		if (!str_len || len < off + str_len)
 			return -EINVAL;
@@ -1152,7 +1152,8 @@ static int gip_handle_pkt_audio_format_chat(struct gip_client *client,
 		return -EINVAL;
 
 	/* chat headsets apparently default to 24 kHz */
-	if (pkt->in_out != GIP_AUD_FORMAT_CHAT_24KHZ || in->valid || out->valid)
+	if (pkt->in_out != GIP_AUD_FORMAT_CHAT_24KHZ ||
+	    in->buffer_size || out->buffer_size)
 		return -EPROTO;
 
 	err = gip_make_audio_config(client, in);
@@ -1206,7 +1207,7 @@ static int gip_handle_pkt_audio_format(struct gip_client *client,
 		return -EINVAL;
 
 	/* format has already been accepted */
-	if (in->valid || out->valid)
+	if (in->buffer_size || out->buffer_size)
 		return -EPROTO;
 
 	/* client rejected format, accept new format */
