@@ -63,7 +63,7 @@ Any issues regarding the packaging should be reported to the respective maintain
 
 ### Prerequisites
 
-- Linux (kernel 5.11+ and headers)
+- Linux (kernel 5.13+ and headers)
 - DKMS
 - curl (for firmware download)
 - cabextract (for firmware extraction)
@@ -82,10 +82,10 @@ git clone https://github.com/medusalix/xone
 
 ```
 cd xone
-sudo ./install.sh --release
+sudo ./install.sh
 ```
 
-**NOTE:** Please omit the `--release` flag when asked for your debug logs.
+**NOTE:** You can use the `--release` flag to disable debug logging.
 
 4. Download the firmware for the wireless dongle:
 
